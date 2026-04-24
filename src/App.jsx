@@ -7,16 +7,30 @@ import {
   ChevronDown, ExternalLink, Hash, Target, Coffee, Zap
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, setDoc, onSnapshot } from "firebase/firestore";
 
-// ─── Storage ───────────────────────────────────────
-const mem = {};
-const sGet = async (key, shared = true) => {
-  try { if (window.storage?.get) return await window.storage.get(key, { shared }); } catch(e) {}
-  return mem[key] ?? null;
+// ─── Firebase ─────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyCN4YkWkCtCO9CaijAQiTpXx5qlzDrqfYc",
+  authDomain: "outreach-hq-8675d.firebaseapp.com",
+  projectId: "outreach-hq-8675d",
+  storageBucket: "outreach-hq-8675d.firebasestorage.app",
+  messagingSenderId: "831502627079",
+  appId: "1:831502627079:web:e44984ca9432960d7115a2",
+  measurementId: "G-2D850Z2497"
 };
-const sSet = async (key, val, shared = true) => {
-  try { if (window.storage?.set) await window.storage.set(key, val, { shared }); } catch(e) {}
-  mem[key] = val;
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+// Write to Firestore (debounced per key)
+const writeTimers = {};
+const saveToFirestore = (key, data) => {
+  if (writeTimers[key]) clearTimeout(writeTimers[key]);
+  writeTimers[key] = setTimeout(() => {
+    setDoc(doc(db, "outreach", key), { data }, { merge: true }).catch(console.error);
+  }, 500);
 };
 
 // ─── Colors & Config ───────────────────────────────
@@ -384,43 +398,58 @@ export default function OutreachHQ() {
   const [showEmail, setShowEmail] = useState(false);
   const [mobileDetail, setMobileDetail] = useState(false);
   const [wantToWork, setWantToWork] = useState({});
-  const saveTimer = useRef(null);
+  const [synced, setSynced] = useState(false);
+  const skipNextSync = useRef(false);
 
-  // Load data
+  // Load identity from localStorage (per device, not shared)
   useEffect(() => {
-    (async () => {
-      try {
-        const id = await sGet('user:identity', false);
-        if (id) setIdentity(id);
-        const stored = await sGet('outreach:candidates', true);
-        if (stored && Array.isArray(stored) && stored.length > 0) {
-          setCandidates(stored);
-        } else {
-          setCandidates(DEFAULT_CANDIDATES);
-          await sSet('outreach:candidates', DEFAULT_CANDIDATES, true);
-        }
-        const wtw = await sGet('outreach:wanttowork', true);
-        if (wtw) setWantToWork(wtw);
-      } catch(e) {
-        console.error(e);
+    try {
+      const saved = localStorage.getItem('outreach:identity');
+      if (saved) setIdentity(saved);
+    } catch(e) {}
+  }, []);
+
+  // Real-time Firestore listener for candidates
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "outreach", "candidates"), (snap) => {
+      if (skipNextSync.current) { skipNextSync.current = false; return; }
+      const d = snap.data();
+      if (d?.data && Array.isArray(d.data) && d.data.length > 0) {
+        setCandidates(d.data);
+      } else if (!snap.exists()) {
+        // First time: seed the database with defaults
         setCandidates(DEFAULT_CANDIDATES);
+        saveToFirestore('candidates', DEFAULT_CANDIDATES);
       }
       setLoading(false);
-    })();
+      setSynced(true);
+    }, (err) => {
+      console.error('Firestore error:', err);
+      setCandidates(DEFAULT_CANDIDATES);
+      setLoading(false);
+    });
+    return () => unsub();
   }, []);
 
-  // Save candidates (debounced)
+  // Real-time Firestore listener for wantToWork
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "outreach", "wanttowork"), (snap) => {
+      const d = snap.data();
+      if (d?.data) setWantToWork(d.data);
+    });
+    return () => unsub();
+  }, []);
+
+  // Save candidates to Firestore (debounced)
   const saveCandidates = useCallback((data) => {
     setCandidates(data);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      sSet('outreach:candidates', data, true);
-    }, 500);
+    skipNextSync.current = true;
+    saveToFirestore('candidates', data);
   }, []);
 
-  const saveIdentity = async (name) => {
+  const saveIdentity = (name) => {
     setIdentity(name);
-    await sSet('user:identity', name, false);
+    try { localStorage.setItem('outreach:identity', name); } catch(e) {}
   };
 
   const updateCandidate = useCallback((id, updates) => {
@@ -428,15 +457,14 @@ export default function OutreachHQ() {
       const next = prev.map(c => {
         if (c.id !== id) return c;
         const updated = { ...c, ...updates, lastUpdatedBy: identity, lastUpdatedAt: today() };
-        // If status changed, add history entry
         if (updates.status && updates.status !== c.status) {
           updated.history = [...(c.history||[]), { action: STATUS_CFG[updates.status]?.label || updates.status, date: today(), by: identity }];
           updated.lastContacted = today();
         }
         return updated;
       });
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => sSet('outreach:candidates', next, true), 500);
+      skipNextSync.current = true;
+      saveToFirestore('candidates', next);
       return next;
     });
   }, [identity]);
@@ -549,7 +577,7 @@ export default function OutreachHQ() {
       try {
         const data = JSON.parse(text);
         if (data.candidates) { saveCandidates(data.candidates); }
-        if (data.wantToWork) { setWantToWork(data.wantToWork); sSet('outreach:wanttowork', data.wantToWork, true); }
+        if (data.wantToWork) { setWantToWork(data.wantToWork); saveToFirestore('wanttowork', data.wantToWork); }
       } catch(err) { console.error('Import error:', err); }
     };
     input.click();
@@ -597,6 +625,10 @@ export default function OutreachHQ() {
             padding:'2px 10px', borderRadius:10, fontSize:11, fontWeight:600,
             background:K.accent, color:'#fff',
           }}>{identity}</span>
+          <span style={{
+            padding:'2px 8px', borderRadius:10, fontSize:10,
+            background: synced ? K.green : K.yellow, color:'#fff',
+          }}>{synced ? '● synkronisert' : '○ kobler til...'}</span>
         </div>
         <div style={{ display:'flex', gap:4 }}>
           <button onClick={exportData} style={{ background:'none', border:'none', cursor:'pointer', color:K.muted, padding:6 }} title="Eksporter">
@@ -1067,7 +1099,7 @@ export default function OutreachHQ() {
                     <button onClick={() => {
                       const next = { ...wantToWork, [s.cat]: !wantToWork[s.cat] };
                       setWantToWork(next);
-                      sSet('outreach:wanttowork', next, true);
+                      saveToFirestore('wanttowork', next);
                     }} style={{
                       padding:'4px 12px', borderRadius:6, border:`1px solid ${K.border}`, cursor:'pointer',
                       background: wantToWork[s.cat] ? K.green : 'transparent',
