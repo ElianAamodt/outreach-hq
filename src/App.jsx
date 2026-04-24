@@ -477,8 +477,19 @@ export default function OutreachHQ() {
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12, flexWrap:'wrap', gap:12 }}>
               <div>
                 <h2 style={{ fontSize:28, fontWeight:800, margin:'0 0 6px', letterSpacing:-0.5 }}>{active.name}</h2>
-                <div style={{ color:K.muted, fontSize:14 }}>
-                  {active.category} · {active.owner}
+                <div style={{ color:K.muted, fontSize:14, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', marginTop:4 }}>
+                  <span>{active.category}</span>
+                  <span>·</span>
+                  <div style={{ display:'inline-flex', gap:4 }}>
+                    {['Elian','Ulrik'].map(n => (
+                      <button key={n} onClick={() => updateCandidate(active.id, { owner: n })} style={{
+                        padding:'3px 12px', borderRadius:8, border:`1px solid ${active.owner===n ? K.accent : K.border}`,
+                        background: active.owner===n ? 'rgba(79,143,255,0.15)' : 'transparent',
+                        color: active.owner===n ? K.accent : K.muted,
+                        cursor:'pointer', fontSize:12, fontWeight: active.owner===n ? 700 : 400, fontFamily:F, transition:'all .2s',
+                      }}>{n}</button>
+                    ))}
+                  </div>
                   {active.lastUpdatedBy && <span> · Oppdatert av {active.lastUpdatedBy} {fmtDate(active.lastUpdatedAt)}</span>}
                 </div>
               </div>
