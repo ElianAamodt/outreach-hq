@@ -127,13 +127,19 @@ function migrateData(data) {
   const migrated = data.map(c => {
     if (!c.role) {
       changed = true;
-      // Special cases
       if (c.name === 'Saxofón Frisør') return { ...c, role:'dropped' };
       if (c.name === 'Sentralstasjonen Fysio') return { ...c, role:'dropped' };
       return { ...c, role: autoRole(c) };
     }
     return c;
   });
+  // Add any new DEFAULT_CANDIDATES not already in Firebase
+  const existingNames = new Set(migrated.map(c => c.name));
+  const newCandidates = DEFAULT_CANDIDATES.filter(c => !existingNames.has(c.name));
+  if (newCandidates.length > 0) {
+    changed = true;
+    migrated.push(...newCandidates);
+  }
   return { data: migrated, changed };
 }
 
